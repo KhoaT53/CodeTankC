@@ -13,7 +13,6 @@ import {
   ShieldAlert,
   LogOut,
   GripVertical,
-  GripHorizontal,
   Columns3,
   Radio,
 } from 'lucide-react';
@@ -79,35 +78,37 @@ interface HudSnapshot {
 }
 
 interface LayoutPreferences {
-  leftWidthPct: number;
-  hudHeightPx: number;
+  leftSidebarPct: number;
+  centerMapPct: number;
   mainHeightPct: number;
   overrideHeightPct: number;
 }
 
 const DEFAULT_LAYOUT: LayoutPreferences = {
-  leftWidthPct: 56,
-  hudHeightPx: 86,
+  leftSidebarPct: 18,
+  centerMapPct: 52,
   mainHeightPct: 45,
   overrideHeightPct: 27,
 };
 
-const LAYOUT_STORAGE_KEY = 'codetank_layout_v1';
+const LAYOUT_STORAGE_KEY = 'codetank_layout_v3';
 
 function loadInitialLayout(): LayoutPreferences {
   try {
     const raw = window.localStorage.getItem(LAYOUT_STORAGE_KEY);
     if (!raw) return DEFAULT_LAYOUT;
     const parsed = JSON.parse(raw);
+    const leftSidebarPct =
+      typeof parsed.leftSidebarPct === 'number'
+        ? Math.max(14, Math.min(28, parsed.leftSidebarPct))
+        : DEFAULT_LAYOUT.leftSidebarPct;
+    const centerMapPct =
+      typeof parsed.centerMapPct === 'number'
+        ? Math.max(28, Math.min(80 - leftSidebarPct, parsed.centerMapPct))
+        : DEFAULT_LAYOUT.centerMapPct;
     return {
-      leftWidthPct:
-        typeof parsed.leftWidthPct === 'number'
-          ? Math.max(30, Math.min(76, parsed.leftWidthPct))
-          : DEFAULT_LAYOUT.leftWidthPct,
-      hudHeightPx:
-        typeof parsed.hudHeightPx === 'number'
-          ? Math.max(48, Math.min(180, parsed.hudHeightPx))
-          : DEFAULT_LAYOUT.hudHeightPx,
+      leftSidebarPct,
+      centerMapPct,
       mainHeightPct:
         typeof parsed.mainHeightPct === 'number'
           ? Math.max(16, Math.min(72, parsed.mainHeightPct))
@@ -182,11 +183,10 @@ export default function App() {
   const [muted, setMuted] = useState<boolean>(false);
   const [isRoomModalOpen, setIsRoomModalOpen] = useState<boolean>(false);
 
-  // Draggable Split-Pane Layout State
+  // Draggable 3-Column Split-Pane Layout State
   const [layout, setLayout] = useState<LayoutPreferences>(loadInitialLayout);
-  const [activeDrag, setActiveDrag] = useState<'MAIN_COLS' | 'GAME_HUD_ROWS' | null>(null);
+  const [activeDrag, setActiveDrag] = useState<'LEFT_SIDEBAR' | 'MAIN_COLS' | null>(null);
   const mainContainerRef = useRef<HTMLElement>(null);
-  const leftPanelRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     try {
@@ -197,31 +197,44 @@ export default function App() {
   }, [layout]);
 
   const startMainDrag = useCallback(
-    (which: 'MAIN_COLS' | 'GAME_HUD_ROWS', e: React.MouseEvent) => {
+    (which: 'LEFT_SIDEBAR' | 'MAIN_COLS', e: React.MouseEvent) => {
       e.preventDefault();
       setActiveDrag(which);
 
       const prevCursor = document.body.style.cursor;
       const prevSelect = document.body.style.userSelect;
-      document.body.style.cursor = which === 'MAIN_COLS' ? 'col-resize' : 'row-resize';
+      document.body.style.cursor = 'col-resize';
       document.body.style.userSelect = 'none';
 
       const onMouseMove = (ev: MouseEvent) => {
-        if (which === 'MAIN_COLS') {
-          const container = mainContainerRef.current;
-          if (!container) return;
-          const rect = container.getBoundingClientRect();
-          if (rect.width <= 300) return;
-          const pct = ((ev.clientX - rect.left) / rect.width) * 100;
-          const clamped = Math.max(30, Math.min(76, Number(pct.toFixed(1))));
-          setLayout((prev) => ({ ...prev, leftWidthPct: clamped }));
+        const container = mainContainerRef.current;
+        if (!container) return;
+        const rect = container.getBoundingClientRect();
+        if (rect.width <= 300) return;
+        const cursorPct = ((ev.clientX - rect.left) / rect.width) * 100;
+
+        if (which === 'LEFT_SIDEBAR') {
+          setLayout((prev) => {
+            const totalLeftAndCenter = prev.leftSidebarPct + prev.centerMapPct;
+            const maxLeft = Math.min(28, totalLeftAndCenter - 28);
+            const newLeft = Math.max(14, Math.min(maxLeft, Number(cursorPct.toFixed(1))));
+            const newCenter = Number((totalLeftAndCenter - newLeft).toFixed(1));
+            return {
+              ...prev,
+              leftSidebarPct: newLeft,
+              centerMapPct: newCenter,
+            };
+          });
         } else {
-          const leftEl = leftPanelRef.current;
-          if (!leftEl) return;
-          const rect = leftEl.getBoundingClientRect();
-          const rawHudHeight = ev.clientY - rect.top - 56;
-          const clampedHud = Math.max(48, Math.min(180, Math.round(rawHudHeight)));
-          setLayout((prev) => ({ ...prev, hudHeightPx: clampedHud }));
+          setLayout((prev) => {
+            const rawCenter = cursorPct - prev.leftSidebarPct;
+            const maxCenter = Math.min(66, 80 - prev.leftSidebarPct);
+            const newCenter = Math.max(28, Math.min(maxCenter, Number(rawCenter.toFixed(1))));
+            return {
+              ...prev,
+              centerMapPct: newCenter,
+            };
+          });
         }
       };
 
@@ -672,171 +685,191 @@ export default function App() {
   };
 
   const playerSnap = hud.tanks.find((t) => t.id === mySlotId) ?? hud.tanks[0];
-  const rightWidthPct = Number((100 - layout.leftWidthPct).toFixed(1));
+  const rightWidthPct = Number((100 - layout.leftSidebarPct - layout.centerMapPct).toFixed(1));
 
   return (
     <main
       ref={mainContainerRef}
       className="w-screen h-screen bg-[#07101c] text-slate-100 flex flex-col lg:flex-row overflow-hidden relative"
     >
-      {/* LEFT PANEL (Resizable % width): TOP CONTROLS, 4 TANK STATUS CARDS, AND 30x30 OXY ISLAND CANVAS */}
-      <section
-        ref={leftPanelRef}
-        style={{ width: `${layout.leftWidthPct}%` }}
-        className="w-full lg:w-auto h-full flex flex-col p-2.5 gap-1.5 overflow-hidden shrink-0"
+      {/* COLUMN 1 (LEFT SIDEBAR): MATCH CONTROLS, SKILL SELECTOR, AND 4 TANK STATUS CARDS */}
+      <aside
+        data-testid="left-hud-sidebar"
+        style={{ width: `${layout.leftSidebarPct}%` }}
+        className="w-full lg:w-auto h-full flex flex-col p-2 gap-2 overflow-hidden shrink-0 bg-[#081220]"
       >
-        {/* Top Match Control Bar */}
-        <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-1.5 bg-[#0d1829] border border-slate-800 rounded-lg shrink-0">
-          <div className="flex items-center gap-2">
-            {/* Brand Emblem SVG */}
-            <svg className="w-5 h-5 text-emerald-400 shrink-0" viewBox="0 0 24 24" fill="none">
-              <rect x="3" y="6" width="14" height="12" rx="2" fill="currentColor" fillOpacity="0.2" stroke="currentColor" strokeWidth="2" />
-              <circle cx="10" cy="12" r="3" fill="currentColor" />
-              <path d="M13 12H22" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
-            </svg>
-            <span
-              className="text-xs font-bold tracking-wide text-white whitespace-nowrap"
-              style={{ fontFamily: 'var(--font-display)' }}
-            >
-              CODETANK OXY
-            </span>
-
-            {networkRole !== 'OFFLINE' && (
-              <span className="px-2 py-0.5 text-[11px] font-mono bg-emerald-950/80 border border-emerald-500/50 text-emerald-300 rounded flex items-center gap-1">
-                <Radio className="w-3 h-3 text-emerald-400" />
-                {roomCode} (#{mySlotId})
+        {/* Top Match Control Panel */}
+        <div className="flex flex-col gap-2 p-2.5 bg-[#0d1829] border border-slate-800 rounded-lg shrink-0">
+          {/* Brand Title + Utility Buttons */}
+          <div className="flex items-center justify-between gap-1.5">
+            <div className="flex items-center gap-1.5 min-w-0">
+              <svg className="w-4 h-4 text-emerald-400 shrink-0" viewBox="0 0 24 24" fill="none">
+                <rect
+                  x="3"
+                  y="6"
+                  width="14"
+                  height="12"
+                  rx="2"
+                  fill="currentColor"
+                  fillOpacity="0.2"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                />
+                <circle cx="10" cy="12" r="3" fill="currentColor" />
+                <path d="M13 12H22" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
+              </svg>
+              <span
+                className="text-xs font-bold tracking-wide text-white truncate"
+                style={{ fontFamily: 'var(--font-display)' }}
+              >
+                CODETANK OXY
               </span>
-            )}
+            </div>
 
-            <span aria-hidden="true" className="text-slate-700">|</span>
+            <div className="flex items-center gap-1 shrink-0">
+              {networkRole !== 'OFFLINE' && (
+                <span className="px-1.5 py-0.5 text-[10px] font-mono bg-emerald-950/80 border border-emerald-500/50 text-emerald-300 rounded flex items-center gap-1">
+                  <Radio className="w-2.5 h-2.5 text-emerald-400" />
+                  {roomCode} (#{mySlotId})
+                </span>
+              )}
 
-            {networkRole !== 'CLIENT' ? (
-              <>
-                <button
-                  type="button"
-                  onClick={handleTogglePause}
-                  className="px-2.5 py-1 text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white rounded flex items-center gap-1 transition-colors cursor-pointer whitespace-nowrap"
-                >
-                  {hud.shellState === 'playing' ? (
-                    <>
-                      <Pause className="w-3.5 h-3.5" /> Tạm Dừng
-                    </>
-                  ) : (
-                    <>
-                      <Play className="w-3.5 h-3.5" /> Tiếp Tục
-                    </>
-                  )}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={handleResetMatch}
-                  className="px-2.5 py-1 text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 rounded flex items-center gap-1 transition-colors cursor-pointer whitespace-nowrap"
-                >
-                  <RotateCcw className="w-3.5 h-3.5" /> Đặt Lại Trận
-                </button>
-              </>
-            ) : (
+              {/* Reset Resizable Layout Button */}
               <button
                 type="button"
-                onClick={handleExitToLobby}
-                className="px-2.5 py-1 text-xs font-semibold bg-rose-950/90 hover:bg-rose-900 text-rose-200 border border-rose-700/60 rounded flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                onClick={handleResetAllLayout}
+                title="Khôi phục kích thước mặc định cho tất cả các khung (Trái, Bản Đồ, Code)"
+                className="px-1.5 py-1 text-[11px] bg-slate-800 hover:bg-slate-700 text-slate-300 rounded border border-slate-700 flex items-center gap-1 cursor-pointer"
               >
-                <LogOut className="w-3.5 h-3.5" /> Rời Phòng
+                <Columns3 className="w-3 h-3 text-emerald-400" />
+                <span>Bố Cục</span>
               </button>
-            )}
+
+              {/* Mute Toggle */}
+              <button
+                type="button"
+                aria-label={muted ? 'Bật âm thanh' : 'Tắt âm thanh'}
+                onClick={() => {
+                  soundFX.muted = !muted;
+                  setMuted(!muted);
+                }}
+                className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded border border-slate-700 cursor-pointer"
+              >
+                {muted ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
+              </button>
+            </div>
           </div>
 
-          <div className="flex items-center gap-1.5 flex-wrap">
-            {/* Skill Selector Dropdown */}
-            <select
-              aria-label="Chọn Kỹ Năng Đặc Biệt (Hồi chiêu 28s)"
-              value={selectedSkill}
-              onChange={(e) => handleSkillChange(Number(e.target.value) as SkillId)}
-              className="bg-slate-900 text-emerald-300 text-xs font-medium px-2 py-1 rounded border border-slate-700 focus:outline-none focus:border-emerald-500"
-            >
-              {SKILLS.map((sk) => (
-                <option key={sk.id} value={sk.id}>
-                  Kỹ Năng {sk.id}: {sk.nameVi} ({sk.duration > 0 ? `${sk.duration}s` : 'Tức thời'})
-                </option>
-              ))}
-            </select>
+          {/* Primary Match Control Buttons */}
+          {networkRole !== 'CLIENT' ? (
+            <div className="grid grid-cols-2 gap-1.5">
+              <button
+                type="button"
+                onClick={handleTogglePause}
+                className="px-2 py-1.5 text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white rounded flex items-center justify-center gap-1 transition-colors cursor-pointer whitespace-nowrap"
+              >
+                {hud.shellState === 'playing' ? (
+                  <>
+                    <Pause className="w-3.5 h-3.5 shrink-0" /> Tạm Dừng
+                  </>
+                ) : (
+                  <>
+                    <Play className="w-3.5 h-3.5 shrink-0" /> Tiếp Tục
+                  </>
+                )}
+              </button>
 
-            {/* Online Room / Bot Inspector Button */}
+              <button
+                type="button"
+                onClick={handleResetMatch}
+                className="px-2 py-1.5 text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 rounded border border-slate-700 flex items-center justify-center gap-1 transition-colors cursor-pointer whitespace-nowrap"
+              >
+                <RotateCcw className="w-3.5 h-3.5 shrink-0" /> Đặt Lại Trận
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={handleExitToLobby}
+              className="w-full px-2.5 py-1.5 text-xs font-semibold bg-rose-950/90 hover:bg-rose-900 text-rose-200 border border-rose-700/60 rounded flex items-center justify-center gap-1 cursor-pointer whitespace-nowrap"
+            >
+              <LogOut className="w-3.5 h-3.5 shrink-0" /> Rời Phòng
+            </button>
+          )}
+
+          {/* Skill Selector Dropdown */}
+          <select
+            aria-label="Chọn Kỹ Năng Đặc Biệt (Hồi chiêu 28s)"
+            value={selectedSkill}
+            onChange={(e) => handleSkillChange(Number(e.target.value) as SkillId)}
+            className="w-full bg-slate-900 text-emerald-300 text-xs font-medium px-2 py-1.5 rounded border border-slate-700 focus:outline-none focus:border-emerald-500"
+          >
+            {SKILLS.map((sk) => (
+              <option key={sk.id} value={sk.id}>
+                Kỹ Năng {sk.id}: {sk.nameVi} ({sk.duration > 0 ? `${sk.duration}s` : 'Tức thời'})
+              </option>
+            ))}
+          </select>
+
+          {/* Secondary Tactical Toggles: Online Room, Grid, Sensor */}
+          <div className="grid grid-cols-3 gap-1.5">
             <button
               type="button"
               onClick={() => setIsRoomModalOpen(true)}
-              className="px-2 py-1 text-xs font-medium bg-slate-800 hover:bg-slate-700 text-sky-300 rounded border border-slate-700 flex items-center gap-1 cursor-pointer whitespace-nowrap"
+              title="Phòng Online PeerJS & Chỉnh Code AI"
+              className="px-1.5 py-1 text-[11px] font-medium bg-slate-800 hover:bg-slate-700 text-sky-300 rounded border border-slate-700 flex items-center justify-center gap-1 cursor-pointer truncate"
             >
-              <Users className="w-3.5 h-3.5" />
-              Phòng Online ({networkRole === 'OFFLINE' ? 'PeerJS' : roomCode})
+              <Users className="w-3 h-3 shrink-0" />
+              <span className="truncate">
+                {networkRole === 'OFFLINE' ? 'Phòng' : roomCode}
+              </span>
             </button>
 
-            {/* Grid Toggle */}
             <button
               type="button"
               aria-label="Bật tắt lưới tọa độ Oxy"
               onClick={() => setShowGrid((g) => !g)}
-              className={`px-2 py-1 text-xs rounded border flex items-center gap-1 cursor-pointer whitespace-nowrap ${
+              className={`px-1.5 py-1 text-[11px] rounded border flex items-center justify-center gap-1 cursor-pointer truncate ${
                 showGrid
                   ? 'bg-slate-800 text-emerald-300 border-emerald-700/60'
                   : 'bg-slate-900 text-slate-400 border-slate-800'
               }`}
             >
-              <Grid className="w-3.5 h-3.5" /> Lưới
+              <Grid className="w-3 h-3 shrink-0" />
+              <span className="truncate">Lưới</span>
             </button>
 
-            {/* Sensor Circle Toggle */}
             <button
               type="button"
               aria-label="Bật tắt vòng cảm biến 20 ô"
               onClick={() => setShowSensor((s) => !s)}
-              className={`px-2 py-1 text-xs rounded border flex items-center gap-1 cursor-pointer whitespace-nowrap ${
+              className={`px-1.5 py-1 text-[11px] rounded border flex items-center justify-center gap-1 cursor-pointer truncate ${
                 showSensor
                   ? 'bg-slate-800 text-sky-300 border-sky-700/60'
                   : 'bg-slate-900 text-slate-400 border-slate-800'
               }`}
             >
-              <Radar className="w-3.5 h-3.5" /> Cảm Biến
-            </button>
-
-            {/* Reset Resizable Layout Button */}
-            <button
-              type="button"
-              onClick={handleResetAllLayout}
-              title="Khôi phục kích thước mặc định cho tất cả các khung (Game, Code, Terminal)"
-              className="px-2 py-1 text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 rounded border border-slate-700 flex items-center gap-1 cursor-pointer whitespace-nowrap"
-            >
-              <Columns3 className="w-3.5 h-3.5 text-emerald-400" />
-              Bố Cục
-            </button>
-
-            {/* Mute Toggle */}
-            <button
-              type="button"
-              aria-label={muted ? 'Bật âm thanh' : 'Tắt âm thanh'}
-              onClick={() => {
-                soundFX.muted = !muted;
-                setMuted(!muted);
-              }}
-              className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded cursor-pointer"
-            >
-              {muted ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
+              <Radar className="w-3 h-3 shrink-0" />
+              <span className="truncate">Cảm Biến</span>
             </button>
           </div>
         </div>
 
-        {/* 4 Tank Status Cards (Resizable height via drag handle below) */}
-        <div
-          style={{ height: `${layout.hudHeightPx}px` }}
-          className="grid grid-cols-2 xl:grid-cols-4 gap-2 shrink-0 overflow-y-auto pr-0.5"
-        >
+        {/* Vertical Stack of 4 Tank Status Cards */}
+        <div className="flex items-center justify-between px-1 text-[11px] font-semibold uppercase tracking-wider text-slate-400 shrink-0">
+          <span>Chiến Xa Trong Trận (4)</span>
+          <span className="font-mono text-emerald-400 tabular-nums">
+            {Math.round(hud.matchTime)}s
+          </span>
+        </div>
+
+        <div className="flex-1 flex flex-col gap-2 overflow-y-auto min-h-0 pr-0.5">
           {hud.tanks.map((t) => {
             const sk = SKILLS.find((s) => s.id === t.skillId) ?? SKILLS[0];
             return (
               <div
                 key={t.id}
-                className={`px-2.5 py-1.5 rounded-lg border transition-opacity flex flex-col justify-between ${
+                className={`flex-1 min-h-[84px] px-2.5 py-2 rounded-lg border transition-opacity flex flex-col justify-between ${
                   t.alive
                     ? t.id === mySlotId
                       ? 'bg-[#0d1b2e] border-emerald-500/50'
@@ -851,9 +884,14 @@ export default function App() {
                   >
                     {t.name}
                   </span>
-                  <span className="text-[11px] font-mono tabular-nums text-slate-400 shrink-0">
-                    ({t.x.toFixed(1)}, {t.y.toFixed(1)})
-                  </span>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <span className="text-[10px] font-mono text-emerald-300/90 bg-emerald-950/60 px-1.5 py-0.5 rounded border border-emerald-800/40">
+                      Hạ: {t.kills}
+                    </span>
+                    <span className="text-[11px] font-mono tabular-nums text-slate-400">
+                      ({t.x.toFixed(1)}, {t.y.toFixed(1)})
+                    </span>
+                  </div>
                 </div>
 
                 {/* Discrete HP Hearts & Ammo Pips */}
@@ -863,7 +901,7 @@ export default function App() {
                     {Array.from({ length: t.maxHp }).map((_, idx) => (
                       <svg
                         key={idx}
-                        className="w-3 h-3"
+                        className="w-3.5 h-3.5"
                         viewBox="0 0 24 24"
                         fill={idx < t.hp ? '#ef4444' : 'none'}
                         stroke={idx < t.hp ? '#ef4444' : '#475569'}
@@ -918,34 +956,52 @@ export default function App() {
             );
           })}
         </div>
+      </aside>
 
-        {/* DRAG HANDLE: RESIZE BETWEEN 4-TANK HUD CARDS AND 30x30 ISLAND CANVAS */}
+      {/* VERTICAL RESIZER 1: DRAG LEFT/RIGHT BETWEEN LEFT SIDEBAR & CENTER MAP PANEL */}
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Kéo để chỉnh độ rộng Cột Thông Tin Trái và Khung Bản Đồ Game"
+        title="Núm kéo chuột trái/phải để điều chỉnh độ rộng Cột Thông Tin Trái & Khung Bản Đồ (Nhấp đúp để đặt lại)"
+        data-testid="resizer-left-sidebar"
+        onMouseDown={(e) => startMainDrag('LEFT_SIDEBAR', e)}
+        onDoubleClick={() =>
+          setLayout((prev) => ({
+            ...prev,
+            leftSidebarPct: DEFAULT_LAYOUT.leftSidebarPct,
+            centerMapPct: DEFAULT_LAYOUT.centerMapPct,
+          }))
+        }
+        className={`hidden lg:flex w-2.5 h-full shrink-0 items-center justify-center cursor-col-resize border-x transition-colors select-none group ${
+          activeDrag === 'LEFT_SIDEBAR'
+            ? 'bg-emerald-500/30 border-emerald-400'
+            : 'bg-[#091322] hover:bg-emerald-500/20 border-slate-800 hover:border-emerald-500/60'
+        }`}
+      >
         <div
-          role="separator"
-          aria-orientation="horizontal"
-          aria-label="Kéo để chỉnh chiều cao thanh trạng thái 4 xe tăng và khung Bản Đồ Game"
-          title="Núm kéo chuột lên/xuống để chỉnh kích thước thanh trạng thái 4 Xe Tăng & Bản Đồ Đảo (Nhấp đúp để đặt lại)"
-          data-testid="resizer-game-hud"
-          onMouseDown={(e) => startMainDrag('GAME_HUD_ROWS', e)}
-          onDoubleClick={() =>
-            setLayout((prev) => ({ ...prev, hudHeightPx: DEFAULT_LAYOUT.hudHeightPx }))
-          }
-          className={`h-2 shrink-0 flex items-center justify-center cursor-row-resize rounded transition-colors select-none group ${
-            activeDrag === 'GAME_HUD_ROWS'
-              ? 'bg-emerald-500/30'
-              : 'bg-slate-900/80 hover:bg-emerald-500/20'
+          className={`w-1.5 h-16 rounded-full flex items-center justify-center transition-colors ${
+            activeDrag === 'LEFT_SIDEBAR'
+              ? 'bg-emerald-400'
+              : 'bg-slate-800 group-hover:bg-emerald-400'
           }`}
         >
-          <GripHorizontal
-            className={`w-3.5 h-3.5 ${
-              activeDrag === 'GAME_HUD_ROWS'
-                ? 'text-emerald-300'
-                : 'text-slate-500 group-hover:text-emerald-300'
+          <GripVertical
+            className={`w-3.5 h-3.5 shrink-0 ${
+              activeDrag === 'LEFT_SIDEBAR'
+                ? 'text-slate-950'
+                : 'text-slate-400 group-hover:text-slate-950'
             }`}
           />
         </div>
+      </div>
 
-        {/* 30x30 Oxy Island Canvas */}
+      {/* COLUMN 2 (CENTER MAP PANEL): FULL-HEIGHT 30x30 OXY ISLAND CANVAS */}
+      <section
+        data-testid="center-map-panel"
+        style={{ width: `${layout.centerMapPct}%` }}
+        className="w-full lg:w-auto h-full flex flex-col p-2 overflow-hidden shrink-0"
+      >
         <IslandCanvas
           worldRef={worldRef}
           showGrid={showGrid}
@@ -956,18 +1012,22 @@ export default function App() {
         />
       </section>
 
-      {/* MAIN VERTICAL RESIZER HANDLE: DRAG LEFT/RIGHT BETWEEN GAME PANEL & CODE PANEL */}
+      {/* VERTICAL RESIZER 2: DRAG LEFT/RIGHT BETWEEN CENTER MAP PANEL & RIGHT CODE PANEL */}
       <div
         role="separator"
         aria-orientation="vertical"
         aria-label="Kéo để chỉnh độ rộng Khung Bản Đồ Game và Khung Code C++"
-        title="Núm kéo chuột trái/phải để điều chỉnh độ rộng Khung Game và Khung Code C++ (Nhấp đúp để đặt lại)"
+        title="Núm kéo chuột trái/phải để điều chỉnh độ rộng Khung Bản Đồ Game và Khung Code C++ (Nhấp đúp để đặt lại)"
         data-testid="resizer-main-cols"
         onMouseDown={(e) => startMainDrag('MAIN_COLS', e)}
         onDoubleClick={() =>
-          setLayout((prev) => ({ ...prev, leftWidthPct: DEFAULT_LAYOUT.leftWidthPct }))
+          setLayout((prev) => ({
+            ...prev,
+            leftSidebarPct: DEFAULT_LAYOUT.leftSidebarPct,
+            centerMapPct: DEFAULT_LAYOUT.centerMapPct,
+          }))
         }
-        className={`hidden lg:flex w-3 h-full shrink-0 items-center justify-center cursor-col-resize border-x transition-colors select-none group ${
+        className={`hidden lg:flex w-2.5 h-full shrink-0 items-center justify-center cursor-col-resize border-x transition-colors select-none group ${
           activeDrag === 'MAIN_COLS'
             ? 'bg-emerald-500/30 border-emerald-400'
             : 'bg-[#091322] hover:bg-emerald-500/20 border-slate-800 hover:border-emerald-500/60'
@@ -990,8 +1050,9 @@ export default function App() {
         </div>
       </div>
 
-      {/* RIGHT PANEL (Resizable % width): MAIN C++ EDITOR, LIVE OVERRIDE TERMINAL, CONSOLE & VIETNAMESE DOCS */}
+      {/* COLUMN 3 (RIGHT CODE PANEL): MAIN C++ EDITOR, LIVE OVERRIDE TERMINAL, CONSOLE & VIETNAMESE DOCS */}
       <div
+        data-testid="right-code-panel"
         style={{ width: `${rightWidthPct}%` }}
         className="w-full lg:w-auto flex-1 h-full min-w-0 overflow-hidden"
       >
