@@ -1,0 +1,6 @@
+{
+  "name": "CodeTank Oxy: Island Battle Royale",
+  "description": "Game lập trình xe tăng C++ chiến thuật 2D Pixel-Art trên hệ trục tọa độ Oxy 30x30 với trình thông dịch C++ thời gian thực.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
