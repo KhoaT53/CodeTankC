@@ -115,6 +115,18 @@ export type PeerMessage =
       code: string;
     }
   | {
+      type: 'CLIENT_INSTANT_MOVE_TO';
+      slotId: number;
+      gx: number;
+      gy: number;
+    }
+  | {
+      type: 'CLIENT_INSTANT_SHOOT';
+      slotId: number;
+      targetX: number;
+      targetY: number;
+    }
+  | {
       type: 'PEER_LEAVE_NOTIFY';
     };
 
@@ -302,6 +314,8 @@ export interface PeerRoomCallbacks {
   ) => void;
   onClientApplyMainCode: (slotId: number, code: string) => void;
   onClientTriggerOverride: (slotId: number, code: string) => void;
+  onClientInstantMoveTo?: (slotId: number, gx: number, gy: number) => void;
+  onClientInstantShoot?: (slotId: number, targetX: number, targetY: number) => void;
   onWorldSyncReceived: (payload: WorldSyncPayload, mySlotId: number) => void;
   getWorldState: () => GameWorldState;
   getHostInfo: () => { name: string; skillId: SkillId };
@@ -592,6 +606,10 @@ export class PeerRoomManager {
       this.callbacks.onClientApplyMainCode(assignedSlot, msg.code);
     } else if (msg.type === 'CLIENT_TRIGGER_OVERRIDE') {
       this.callbacks.onClientTriggerOverride(assignedSlot, msg.code);
+    } else if (msg.type === 'CLIENT_INSTANT_MOVE_TO') {
+      this.callbacks.onClientInstantMoveTo?.(assignedSlot, msg.gx, msg.gy);
+    } else if (msg.type === 'CLIENT_INSTANT_SHOOT') {
+      this.callbacks.onClientInstantShoot?.(assignedSlot, msg.targetX, msg.targetY);
     }
   }
 
@@ -941,6 +959,30 @@ export class PeerRoomManager {
         type: 'CLIENT_TRIGGER_OVERRIDE',
         slotId: this.mySlotId,
         code,
+      };
+      this.sendToHost(msg);
+    }
+  }
+
+  public sendClientInstantMoveTo(gx: number, gy: number): void {
+    if (this.role === 'CLIENT') {
+      const msg: PeerMessage = {
+        type: 'CLIENT_INSTANT_MOVE_TO',
+        slotId: this.mySlotId,
+        gx,
+        gy,
+      };
+      this.sendToHost(msg);
+    }
+  }
+
+  public sendClientInstantShoot(targetX: number, targetY: number): void {
+    if (this.role === 'CLIENT') {
+      const msg: PeerMessage = {
+        type: 'CLIENT_INSTANT_SHOOT',
+        slotId: this.mySlotId,
+        targetX,
+        targetY,
       };
       this.sendToHost(msg);
     }

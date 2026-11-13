@@ -19,17 +19,28 @@ interface IslandCanvasProps {
   showGrid: boolean;
   showSensor: boolean;
   onSelectCoord?: (gx: number, gy: number) => void;
+  onInstantMoveTo?: (gx: number, gy: number) => void;
+  onInstantShoot?: (x: number, y: number) => void;
 }
 
 const RULER_LEFT = 30;
 const RULER_BOTTOM = 28;
 const OCEAN_PADDING = 18;
 
+interface ClickPulseEffect {
+  type: 'MOVE' | 'SHOOT';
+  x: number;
+  y: number;
+  createdAt: number;
+}
+
 export const IslandCanvas: React.FC<IslandCanvasProps> = ({
   worldRef,
   showGrid,
   showSensor,
   onSelectCoord,
+  onInstantMoveTo,
+  onInstantShoot,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -40,6 +51,10 @@ export const IslandCanvas: React.FC<IslandCanvasProps> = ({
     gy: number;
     tileType: number;
   } | null>(null);
+
+  const clickPulsesRef = useRef<ClickPulseEffect[]>([]);
+  const lastDblClickAtRef = useRef<number>(0);
+  const lastShootAtRef = useRef<number>(0);
 
   const showGridRef = useRef(showGrid);
   const showSensorRef = useRef(showSensor);
@@ -453,6 +468,39 @@ export const IslandCanvas: React.FC<IslandCanvasProps> = ({
         ctx.restore();
       }
 
+      // 11. Tactical Mouse Double-Click (Move) & Triple-Click (Shoot) Reticle Pulses
+      for (let i = clickPulsesRef.current.length - 1; i >= 0; i--) {
+        const pulse = clickPulsesRef.current[i];
+        const ageMs = timeMs - pulse.createdAt;
+        if (ageMs > 700) {
+          clickPulsesRef.current.splice(i, 1);
+          continue;
+        }
+        const progress = ageMs / 700;
+        const { cx, cy } = oxyToCanvas(pulse.x, pulse.y, islandPx, offsetLeft, offsetTop);
+        ctx.save();
+        ctx.globalAlpha = Math.max(0, 1 - progress);
+        if (pulse.type === 'MOVE') {
+          ctx.strokeStyle = '#38bdf8';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(cx, cy, 4 + progress * cellPx * 0.9, 0, Math.PI * 2);
+          ctx.stroke();
+        } else {
+          ctx.strokeStyle = '#f59e0b';
+          ctx.lineWidth = 2;
+          const r = 5 + progress * cellPx * 0.85;
+          ctx.beginPath();
+          ctx.arc(cx, cy, r, 0, Math.PI * 2);
+          ctx.moveTo(cx - r - 4, cy);
+          ctx.lineTo(cx + r + 4, cy);
+          ctx.moveTo(cx, cy - r - 4);
+          ctx.lineTo(cx, cy + r + 4);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
       // 12. Cartesian Oxy Coordinate Rulers:
       // Left Border = Y-Axis (0..29 pointing UP), Bottom Border = X-Axis (0..29 pointing RIGHT)
       ctx.fillStyle = '#0f172a';
@@ -521,12 +569,14 @@ export const IslandCanvas: React.FC<IslandCanvasProps> = ({
     };
   }, [worldRef]);
 
-  const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  const getOxyFromMouseEvent = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!canvas) return null;
     const rect = canvas.getBoundingClientRect();
-    const mx = e.clientX - rect.left;
-    const my = e.clientY - rect.top;
+    const scaleX = rect.width > 0 ? canvas.width / rect.width : 1;
+    const scaleY = rect.height > 0 ? canvas.height / rect.height : 1;
+    const mx = (e.clientX - rect.left) * scaleX;
+    const my = (e.clientY - rect.top) * scaleY;
 
     const offsetLeft = RULER_LEFT + OCEAN_PADDING;
     const offsetTop = OCEAN_PADDING;
@@ -541,6 +591,13 @@ export const IslandCanvas: React.FC<IslandCanvasProps> = ({
     const { x, y } = canvasToOxy(mx, my, islandPx, offsetLeft, offsetTop);
     const gx = Math.floor(x);
     const gy = Math.floor(y);
+    return { x, y, gx, gy };
+  };
+
+  const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const coords = getOxyFromMouseEvent(e);
+    if (!coords) return;
+    const { x, y, gx, gy } = coords;
     const tileType = getGridTypeAt(worldRef.current.grid, gx, gy);
 
     setHoverInfo({
@@ -552,10 +609,75 @@ export const IslandCanvas: React.FC<IslandCanvasProps> = ({
     });
   };
 
-  const handleCanvasClick = () => {
-    if (hoverInfo && hoverInfo.gx >= 0 && hoverInfo.gx < GRID_SIZE && hoverInfo.gy >= 0 && hoverInfo.gy < GRID_SIZE) {
-      onSelectCoord?.(hoverInfo.gx, hoverInfo.gy);
+  const triggerMoveToAt = (gx: number, gy: number) => {
+    if (gx < 0 || gx >= GRID_SIZE || gy < 0 || gy >= GRID_SIZE) return;
+    const now = performance.now();
+    lastDblClickAtRef.current = now;
+    clickPulsesRef.current.push({
+      type: 'MOVE',
+      x: gx + 0.5,
+      y: gy + 0.5,
+      createdAt: now,
+    });
+    onInstantMoveTo?.(gx, gy);
+  };
+
+  const triggerShootAt = (x: number, y: number) => {
+    const now = performance.now();
+    // Enforce at least 0.25s (250ms) minimum delay between two consecutive Ctrl + Click shots
+    if (now - lastShootAtRef.current < 250) return;
+    lastShootAtRef.current = now;
+    const clampedX = Math.max(0, Math.min(GRID_SIZE - 0.01, x));
+    const clampedY = Math.max(0, Math.min(GRID_SIZE - 0.01, y));
+    clickPulsesRef.current.push({
+      type: 'SHOOT',
+      x: clampedX,
+      y: clampedY,
+      createdAt: now,
+    });
+    onInstantShoot?.(clampedX, clampedY);
+  };
+
+  const handleCanvasMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    // Support Ctrl + Click on macOS/Windows/Linux immediately on mousedown
+    if (e.button === 0 && (e.ctrlKey || e.metaKey)) {
+      const coords = getOxyFromMouseEvent(e);
+      if (!coords) return;
+      triggerShootAt(coords.x, coords.y);
     }
+  };
+
+  const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const coords = getOxyFromMouseEvent(e);
+    if (!coords) return;
+    const { x, y, gx, gy } = coords;
+
+    // Hold Ctrl + Simple Click -> Instant Shoot toward cursor
+    if (e.ctrlKey || e.metaKey) {
+      triggerShootAt(x, y);
+      return;
+    }
+
+    if (e.detail === 2) {
+      triggerMoveToAt(gx, gy);
+      return;
+    }
+
+    if (e.detail === 1 && gx >= 0 && gx < GRID_SIZE && gy >= 0 && gy < GRID_SIZE) {
+      onSelectCoord?.(gx, gy);
+    }
+  };
+
+  const handleCanvasDoubleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const coords = getOxyFromMouseEvent(e);
+    if (!coords) return;
+    if (e.ctrlKey || e.metaKey) {
+      triggerShootAt(coords.x, coords.y);
+      return;
+    }
+    // Support synthetic dblclick events if not already handled by click(detail=2) within the last 90ms
+    if (performance.now() - lastDblClickAtRef.current < 90) return;
+    triggerMoveToAt(coords.gx, coords.gy);
   };
 
   const getTileLabelVi = (t: number) => {
@@ -580,7 +702,7 @@ export const IslandCanvas: React.FC<IslandCanvasProps> = ({
       {/* Oxy Axis Legend & Live Hover Coordinate Readout Strip */}
       <div className="flex items-center justify-between gap-3 bg-slate-950/95 border-b border-slate-800/90 px-3 py-1 text-[11px] font-mono tabular-nums text-slate-200 shrink-0">
         <span className="text-emerald-400 font-semibold whitespace-nowrap">
-          Hệ Trục Oxy: Gốc O(0,0) Dưới-Trái · X(0..29) Ngang · Y(0..29) Dọc
+          Oxy O(0,0) Dưới-Trái · <span className="text-sky-300">Nhấp đúp: Di chuyển</span> · <span className="text-amber-300">Ctrl + Click: Bắn</span>
         </span>
         {hoverInfo ? (
           <span className="truncate">
@@ -591,7 +713,7 @@ export const IslandCanvas: React.FC<IslandCanvasProps> = ({
           </span>
         ) : (
           <span className="text-slate-400 truncate">
-            Di chuột hoặc nhấp vào ô trên đảo để lấy tọa độ Oxy (x, y)
+            Nhấp đúp vào ô để moveTo tức thời · Giữ Ctrl + Click chuột để bắn
           </span>
         )}
       </div>
@@ -605,7 +727,12 @@ export const IslandCanvas: React.FC<IslandCanvasProps> = ({
           data-testid="island-canvas"
           onMouseMove={handleMouseMove}
           onMouseLeave={() => setHoverInfo(null)}
+          onMouseDown={handleCanvasMouseDown}
           onClick={handleCanvasClick}
+          onDoubleClick={handleCanvasDoubleClick}
+          onContextMenu={(e) => {
+            if (e.ctrlKey || e.metaKey) e.preventDefault();
+          }}
           className="cursor-crosshair block"
         />
       </div>

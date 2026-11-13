@@ -13,6 +13,7 @@ import {
   PORTAL_COOLDOWN,
   COMPILE_COOLDOWN,
   MAX_MAP_ITEMS,
+  INSTANT_SHOOT_COOLDOWN,
   TileType,
   SkillId,
   ItemType,
@@ -541,6 +542,107 @@ function fireTankBullet(world: GameWorldState, tank: Tank, angleDeg: number): bo
 }
 
 /**
+ * Executes an immediate `moveTo(gx, gy, false, "SHORTEST")` on `tankId` with ZERO compile delay
+ * (triggered by double-clicking a cell on the 30x30 island map).
+ */
+export function executeInstantMoveTo(
+  world: GameWorldState,
+  tankId: number,
+  rawGx: number,
+  rawGy: number
+): boolean {
+  const tank = world.tanks.find((t) => t.id === tankId);
+  if (!tank || !tank.alive) return false;
+
+  const gx = Math.max(0, Math.min(GRID_SIZE - 1, Math.floor(rawGx)));
+  const gy = Math.max(0, Math.min(GRID_SIZE - 1, Math.floor(rawGy)));
+
+  const waypoints = findPath8Dir(
+    world.grid,
+    world.tanks,
+    tank,
+    gx,
+    gy,
+    false,
+    'SHORTEST',
+    world.portals
+  );
+  if (waypoints.length === 0) return false;
+
+  tank.overrideQueue = [
+    {
+      type: 'MOVE_TO_PATH',
+      targetGx: gx,
+      targetGy: gy,
+      avoidEnemy: false,
+      mode: 'SHORTEST',
+      waypoints,
+      currentIdx: 0,
+    },
+  ];
+  tank.executingOverride = true;
+
+  spawnParticles(world, gx + 0.5, gy + 0.5, '#38bdf8', 8, 2.8, 2.2);
+  addFloatingText(world, gx + 0.5, gy + 0.5, `⚡ ĐẾN (${gx},${gy})`, '#38bdf8');
+  addConsoleLog(
+    world,
+    tank.name,
+    'OVERRIDE',
+    `Điều khiển chuột tức thời: moveTo(${gx}, ${gy}, false, "SHORTEST")`
+  );
+  return true;
+}
+
+/**
+ * Fires a single bullet (`shoot(angle)`) from `tankId` aimed directly toward `(targetX, targetY)`
+ * in Oxy coordinates with ZERO compile delay (triggered by holding Ctrl + Click on the map).
+ */
+export function executeInstantShoot(
+  world: GameWorldState,
+  tankId: number,
+  targetX: number,
+  targetY: number
+): boolean {
+  const tank = world.tanks.find((t) => t.id === tankId);
+  if (!tank || !tank.alive) return false;
+
+  const dx = targetX - tank.x;
+  const dy = targetY - tank.y;
+  const angleDeg = ((Math.round((Math.atan2(dy, dx) * 180) / Math.PI) % 360) + 360) % 360;
+  tank.turretAngle = angleDeg;
+
+  // Enforce a minimum delay (>= 0.25s) between two consecutive Ctrl + Click shots
+  if ((tank.instantShootCooldown ?? 0) > 0) {
+    return false;
+  }
+
+  const infiniteAmmo = tank.skillId === SkillId.INFINITE_AMMO && tank.activeSkillTimer > 0;
+  if (!infiniteAmmo && tank.reloadTimer > 0) {
+    addFloatingText(world, tank.x, tank.y + 0.75, 'ĐANG NẠP ĐẠN!', '#f59e0b');
+    return false;
+  }
+  if (!infiniteAmmo && tank.ammo <= 0) {
+    tank.reloadTimer = RELOAD_DURATION;
+    addFloatingText(world, tank.x, tank.y + 0.75, 'HẾT ĐẠN -> NẠP (2.5s)!', '#fbbf24');
+    return false;
+  }
+
+  tank.fireCooldown = 0;
+  const fired = fireTankBullet(world, tank, angleDeg);
+  if (fired) {
+    tank.instantShootCooldown = INSTANT_SHOOT_COOLDOWN;
+    addFloatingText(world, tank.x, tank.y + 0.75, `🎯 BẮN ${angleDeg}°!`, '#fbbf24');
+    addConsoleLog(
+      world,
+      tank.name,
+      'COMBAT',
+      `Bắn tức thời hướng chuột (${targetX.toFixed(1)}, ${targetY.toFixed(1)}): shoot(${angleDeg})`
+    );
+  }
+  return fired;
+}
+
+/**
  * Builds the C++ API bindings for `tank`, pushing kinetic tasks into `targetQueue`.
  */
 function buildTankApiBindings(
@@ -588,14 +690,19 @@ function buildTankApiBindings(
       }
     },
     shoot: (angle) => {
-      if (tank.fireCooldown <= 0) {
-        fireTankBullet(world, tank, angle);
+      const normAngle = ((Math.round(angle) % 360) + 360) % 360;
+      const infiniteAmmo = tank.skillId === SkillId.INFINITE_AMMO && tank.activeSkillTimer > 0;
+      const canFireImmediately =
+        targetQueue.length === 0 &&
+        tank.fireCooldown <= 0 &&
+        (infiniteAmmo || (tank.reloadTimer <= 0 && tank.ammo > 0));
+
+      if (canFireImmediately) {
+        fireTankBullet(world, tank, normAngle);
       } else {
         targetQueue.push({
-          type: 'AUTO_FIRE',
-          remainingShots: 1,
-          strategy: 'DIRECT',
-          waitTimer: 0,
+          type: 'SHOOT_AT_ANGLE',
+          angleDeg: normAngle,
         });
       }
     },
@@ -612,6 +719,10 @@ function buildTankApiBindings(
       });
     },
     reload: () => {
+      if (targetQueue.length > 0) {
+        targetQueue.push({ type: 'RELOAD_AMMO' });
+        return;
+      }
       if (tank.reloadTimer <= 0 && tank.ammo < tank.maxAmmo) {
         tank.reloadTimer = RELOAD_DURATION;
         addFloatingText(world, tank.x, tank.y + 0.6, 'Nạp đạn (2.5s)...', '#fbbf24');
@@ -920,7 +1031,13 @@ function updateTank(world: GameWorldState, tank: Tank, dt: number): void {
   }
 
   if (tank.hitFlashTimer > 0) tank.hitFlashTimer = Math.max(0, tank.hitFlashTimer - dt);
-  if (tank.fireCooldown > 0) tank.fireCooldown = Math.max(0, tank.fireCooldown - dt);
+  if (tank.fireCooldown > 0) {
+    tank.fireCooldown = tank.fireCooldown - dt < 1e-6 ? 0 : tank.fireCooldown - dt;
+  }
+  if (tank.instantShootCooldown && tank.instantShootCooldown > 0) {
+    tank.instantShootCooldown =
+      tank.instantShootCooldown - dt < 1e-6 ? 0 : tank.instantShootCooldown - dt;
+  }
   if (tank.dashCooldown > 0) tank.dashCooldown = Math.max(0, tank.dashCooldown - dt);
   if (tank.skillCooldown > 0) tank.skillCooldown = Math.max(0, tank.skillCooldown - dt);
 
@@ -1095,6 +1212,41 @@ function updateTank(world: GameWorldState, tank: Tank, dt: number): void {
         break;
       }
 
+      case 'RELOAD_AMMO': {
+        if (tank.reloadTimer <= 0 && tank.ammo < tank.maxAmmo) {
+          tank.reloadTimer = RELOAD_DURATION;
+          addFloatingText(world, tank.x, tank.y + 0.6, 'Nạp đạn (2.5s)...', '#fbbf24');
+        }
+        currentQueue.shift();
+        break;
+      }
+
+      case 'SHOOT_AT_ANGLE': {
+        const infiniteAmmo = tank.skillId === SkillId.INFINITE_AMMO && tank.activeSkillTimer > 0;
+        if (!infiniteAmmo && tank.reloadTimer > 0) {
+          // Wait until ongoing reload finishes before firing this queued shot
+          break;
+        }
+        if (!infiniteAmmo && tank.ammo <= 0) {
+          // Automatically reload so the remaining queued shoot() calls can still execute
+          tank.reloadTimer = RELOAD_DURATION;
+          addFloatingText(world, tank.x, tank.y + 0.6, 'Nạp đạn (2.5s)...', '#fbbf24');
+          break;
+        }
+        if (tank.fireCooldown <= 1e-6) {
+          fireTankBullet(world, tank, task.angleDeg);
+          currentQueue.shift();
+          if (currentQueue.length > 0 && currentQueue[0].type === 'RELOAD_AMMO') {
+            currentQueue.shift();
+            if (tank.reloadTimer <= 0 && tank.ammo < tank.maxAmmo) {
+              tank.reloadTimer = RELOAD_DURATION;
+              addFloatingText(world, tank.x, tank.y + 0.6, 'Nạp đạn (2.5s)...', '#fbbf24');
+            }
+          }
+        }
+        break;
+      }
+
       case 'AUTO_FIRE': {
         if (task.waitTimer > 0) {
           task.waitTimer -= dt;
@@ -1133,24 +1285,60 @@ function updateTank(world: GameWorldState, tank: Tank, dt: number): void {
 
 /**
  * Updates all bullets: flight, Brick Wall ricochets (up to 2 times), Crate/Boulder destruction,
- * and Tank hits + 2.0-unit Knockback.
+ * Bullet-vs-Bullet mid-air collision explosions, and Tank hits + 2.0-unit Knockback.
  */
 function updateBullets(world: GameWorldState, dt: number): void {
+  if (world.bullets.length === 0) return;
+
   const subSteps = 3;
   const subDt = dt / subSteps;
+  const bulletCollisionRadius = 0.38;
+  const destroyedIds = new Set<string>();
 
-  for (let i = world.bullets.length - 1; i >= 0; i--) {
-    const b = world.bullets[i];
-    let destroyed = false;
+  const checkPairwiseBulletCollisions = () => {
+    const count = world.bullets.length;
+    for (let i = 0; i < count; i++) {
+      const b1 = world.bullets[i];
+      if (destroyedIds.has(b1.id)) continue;
+      for (let j = i + 1; j < count; j++) {
+        const b2 = world.bullets[j];
+        if (destroyedIds.has(b2.id)) continue;
+        // Two unbounced bullets from the same tank never self-collide at the barrel
+        if (b1.ownerId === b2.ownerId && b1.bounces === 0 && b2.bounces === 0) continue;
 
-    for (let s = 0; s < subSteps; s++) {
+        const dist = Math.hypot(b1.x - b2.x, b1.y - b2.y);
+        if (dist <= bulletCollisionRadius) {
+          destroyedIds.add(b1.id);
+          destroyedIds.add(b2.id);
+
+          const mx = (b1.x + b2.x) * 0.5;
+          const my = (b1.y + b2.y) * 0.5;
+          world.screenShake = Math.max(world.screenShake, 0.16);
+          soundFX.playHit();
+          spawnParticles(world, mx, my, '#f97316', 18, 5.5, 4.0);
+          spawnParticles(world, mx, my, '#fef08a', 10, 3.5, 2.8);
+          addFloatingText(world, mx, my + 0.35, '💥 ĐẠN NỔ!', '#fb923c');
+          break;
+        }
+      }
+    }
+  };
+
+  // Check if any bullets are already overlapping at the start of the frame
+  checkPairwiseBulletCollisions();
+
+  for (let s = 0; s < subSteps; s++) {
+    for (let i = 0; i < world.bullets.length; i++) {
+      const b = world.bullets[i];
+      if (destroyedIds.has(b.id)) continue;
+
       const nx = b.x + b.vx * subDt;
       const ny = b.y + b.vy * subDt;
 
       // Out of island bounds -> bullet disappears over deep ocean
       if (nx < 0 || nx >= GRID_SIZE || ny < 0 || ny >= GRID_SIZE) {
-        destroyed = true;
-        break;
+        destroyedIds.add(b.id);
+        continue;
       }
 
       const prevGx = Math.floor(b.x);
@@ -1164,8 +1352,8 @@ function updateBullets(world: GameWorldState, dt: number): void {
         b.bounces++;
         if (b.bounces > 2) {
           spawnParticles(world, nx, ny, '#cbd5e1', 6, 3.0, 2.5);
-          destroyed = true;
-          break;
+          destroyedIds.add(b.id);
+          continue;
         }
         soundFX.playRicochet();
         spawnParticles(world, nx, ny, '#fbbf24', 5, 3.5, 2.5);
@@ -1176,7 +1364,7 @@ function updateBullets(world: GameWorldState, dt: number): void {
           b.vy = -b.vy;
         }
         b.angleDeg = ((Math.round((Math.atan2(b.vy, b.vx) * 180) / Math.PI) % 360) + 360) % 360;
-        break;
+        continue;
       }
 
       // 2. Wooden Crate (2) or Rock Boulder (3): Deals 1 damage, destroyed immediately (NO bounce)
@@ -1189,14 +1377,22 @@ function updateBullets(world: GameWorldState, dt: number): void {
           world.grid[newGy][newGx] = TileType.EMPTY;
           spawnParticles(world, newGx + 0.5, newGy + 0.5, isCrate ? '#f59e0b' : '#cbd5e1', 16, 5.0, 3.5);
         }
-        destroyed = true;
-        break;
+        destroyedIds.add(b.id);
+        continue;
       }
 
       b.x = nx;
       b.y = ny;
+    }
 
-      // 3. Tank Collision Check
+    // 3. Bullet-vs-Bullet Mid-Air Collision Check after all bullets step this substep
+    checkPairwiseBulletCollisions();
+
+    // 4. Tank Collision Check for surviving bullets
+    for (let i = 0; i < world.bullets.length; i++) {
+      const b = world.bullets[i];
+      if (destroyedIds.has(b.id)) continue;
+
       for (const tank of world.tanks) {
         if (!tank.alive || tank.id === b.ownerId) continue;
         const isShrunk = tank.skillId === SkillId.SHRINK && tank.activeSkillTimer > 0;
@@ -1255,15 +1451,16 @@ function updateBullets(world: GameWorldState, dt: number): void {
             );
           }
 
-          destroyed = true;
+          destroyedIds.add(b.id);
           break;
         }
       }
-
-      if (destroyed) break;
     }
+  }
 
-    if (destroyed) {
+  for (let i = world.bullets.length - 1; i >= 0; i--) {
+    const b = world.bullets[i];
+    if (destroyedIds.has(b.id)) {
       world.bullets.splice(i, 1);
     } else {
       b.trail.push({ x: b.x, y: b.y });

@@ -28,6 +28,8 @@ import {
   createInitialWorldState,
   stepWorldSimulation,
   triggerLiveOverride,
+  executeInstantMoveTo,
+  executeInstantShoot,
   addConsoleLog,
   DEFAULT_COMPETITOR_CONFIGS,
 } from './game/engine';
@@ -279,9 +281,31 @@ export default function App() {
   const selectedSkillRef = useRef<SkillId>(selectedSkill);
   selectedSkillRef.current = selectedSkill;
 
-  // Mirror shellState to document.body.dataset.state
+  // Mirror shellState to document.body.dataset.state & expose window.__GAME_STATE__ hook
   useEffect(() => {
     document.body.dataset.state = hud.shellState;
+    (window as any).__GAME_STATE__ = () => {
+      const w = worldRef.current;
+      const p = w.tanks[0];
+      return {
+        shellState: w.shellState,
+        matchTime: w.matchTime,
+        bulletCount: w.bullets.length,
+        player: p
+          ? {
+              x: p.x,
+              y: p.y,
+              hp: p.hp,
+              ammo: p.ammo,
+              turretAngle: p.turretAngle,
+              compileTimer: p.compileTimer,
+              executingOverride: p.executingOverride,
+              overrideQueueLen: p.overrideQueue.length,
+            }
+          : null,
+        latestLogs: w.logs.slice(0, 5).map((l) => l.message),
+      };
+    };
   }, [hud.shellState]);
 
   // Initialize PeerRoomManager once
@@ -346,6 +370,14 @@ export default function App() {
       },
       onClientTriggerOverride: (slotId, code) => {
         triggerLiveOverride(worldRef.current, slotId, code);
+      },
+      onClientInstantMoveTo: (slotId, gx, gy) => {
+        executeInstantMoveTo(worldRef.current, slotId, gx, gy);
+        setHud(extractHudSnapshot(worldRef.current));
+      },
+      onClientInstantShoot: (slotId, targetX, targetY) => {
+        executeInstantShoot(worldRef.current, slotId, targetX, targetY);
+        setHud(extractHudSnapshot(worldRef.current));
       },
       onWorldSyncReceived: (payload, assignedSlotId) => {
         applySyncedWorldToClient(worldRef.current, payload, assignedSlotId);
@@ -619,6 +651,24 @@ export default function App() {
     } else {
       setOverrideCode(`moveTo(${gx}, ${gy}, true, "SAFEST");\nautoFire(2, "DIRECT");`);
     }
+  };
+
+  const handleInstantMoveTo = (gx: number, gy: number) => {
+    if (networkRole === 'CLIENT') {
+      peerManagerRef.current?.sendClientInstantMoveTo(gx, gy);
+      return;
+    }
+    executeInstantMoveTo(worldRef.current, 1, gx, gy);
+    setHud(extractHudSnapshot(worldRef.current));
+  };
+
+  const handleInstantShoot = (x: number, y: number) => {
+    if (networkRole === 'CLIENT') {
+      peerManagerRef.current?.sendClientInstantShoot(x, y);
+      return;
+    }
+    executeInstantShoot(worldRef.current, 1, x, y);
+    setHud(extractHudSnapshot(worldRef.current));
   };
 
   const playerSnap = hud.tanks.find((t) => t.id === mySlotId) ?? hud.tanks[0];
@@ -901,6 +951,8 @@ export default function App() {
           showGrid={showGrid}
           showSensor={showSensor}
           onSelectCoord={handleSelectCanvasCoord}
+          onInstantMoveTo={handleInstantMoveTo}
+          onInstantShoot={handleInstantShoot}
         />
       </section>
 

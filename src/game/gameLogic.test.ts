@@ -21,6 +21,8 @@ import {
   createInitialWorldState,
   stepWorldSimulation,
   triggerLiveOverride,
+  executeInstantMoveTo,
+  executeInstantShoot,
 } from './engine';
 
 test('Physics speeds are 2.0 grid units/sec for tanks and 4.0 grid units/sec for bullets', () => {
@@ -354,4 +356,138 @@ test('PeerJS room code generation and authoritative world state synchronization 
   assert.equal(clientWorld.tanks[0].isPlayer, false);
   assert.equal(clientWorld.grid[5][5], TileType.EMPTY);
 });
+
+test('Double-click executeInstantMoveTo and Triple-click executeInstantShoot run immediately with zero compile delay', () => {
+  const world = createInitialWorldState();
+  world.shellState = 'playing';
+  const player = world.tanks[0];
+  player.x = 3.5;
+  player.y = 3.5;
+  player.mainCode = 'void setup() {} void loop() {}';
+
+  // 1. Double-click cell (8, 3): executes moveTo(8, 3, false, "SHORTEST") with 0s compileTimer
+  const moveOk = executeInstantMoveTo(world, player.id, 8, 3);
+  assert.equal(moveOk, true);
+  assert.equal(player.compileTimer, 0);
+  assert.equal(player.executingOverride, true);
+  assert.equal(player.overrideQueue.length, 1);
+  assert.equal(player.overrideQueue[0].type, 'MOVE_TO_PATH');
+  if (player.overrideQueue[0].type === 'MOVE_TO_PATH') {
+    assert.equal(player.overrideQueue[0].targetGx, 8);
+    assert.equal(player.overrideQueue[0].targetGy, 3);
+    assert.equal(player.overrideQueue[0].avoidEnemy, false);
+    assert.equal(player.overrideQueue[0].mode, 'SHORTEST');
+  }
+
+  // Step 0.05s: tank moves immediately on the very first frame without waiting 1.0s
+  const prevX = player.x;
+  stepWorldSimulation(world, 0.05);
+  assert.ok(player.x > prevX);
+
+  // 2. Triple-click at (15.5, 3.5): fires bullet immediately at 0 deg with 0s compileTimer
+  const bulletsBefore = world.bullets.length;
+  const shootOk = executeInstantShoot(world, player.id, 15.5, 3.5);
+  assert.equal(shootOk, true);
+  assert.equal(player.compileTimer, 0);
+  assert.equal(player.turretAngle, 0);
+  assert.equal(world.bullets.length, bulletsBefore + 1);
+  assert.equal(world.bullets[world.bullets.length - 1].angleDeg, 0);
+
+  // Calling executeInstantShoot again < 0.25s later is blocked by the minimum delay
+  assert.equal(executeInstantShoot(world, player.id, 15.5, 3.5), false);
+  // Step 0.3s (> 0.25s) so instantShootCooldown expires, then next triple-click shot succeeds
+  for (let i = 0; i < 6; i++) {
+    stepWorldSimulation(world, 0.05);
+  }
+  assert.equal(executeInstantShoot(world, player.id, 15.5, 3.5), true);
+});
+
+test('Multiple consecutive shoot() calls in C++ code execute all shots in sequence at their exact angles', () => {
+  const world = createInitialWorldState();
+  world.shellState = 'playing';
+
+  // Hide/freeze all bots so there are ZERO visible enemies on the map
+  for (const b of world.tanks.slice(1)) {
+    b.x = 28.5;
+    b.y = 28.5;
+    b.mainCode = 'void setup() {} void loop() {}';
+  }
+  // Keep one bot alive behind brick walls so match stays in 'playing' state
+  world.grid[27][28] = TileType.BRICK;
+  world.grid[28][27] = TileType.BRICK;
+
+  const player = world.tanks[0];
+  player.x = 14.5;
+  player.y = 14.5;
+  player.mainCode = `
+    void setup() {
+      shoot(0);
+      shoot(45);
+      shoot(90);
+      reload();
+    }
+    void loop() {}
+  `;
+  player.setupDone = false;
+  player.actionQueue = [];
+
+  // Step 1 frame (0.05s): setup() runs, 1st shot (0 deg) fires immediately, 45 deg and 90 deg + reload() are queued
+  stepWorldSimulation(world, 0.05);
+  assert.equal(player.shotsFired, 1);
+  assert.equal(world.bullets[0].angleDeg, 0);
+  assert.equal(player.reloadTimer, 0); // reload() must wait until queued shoot(45) and shoot(90) finish!
+
+  // Advance 0.55s: 2nd shot (45 deg) fires
+  for (let i = 0; i < 11; i++) {
+    stepWorldSimulation(world, 0.05);
+  }
+  assert.equal(player.shotsFired, 2);
+
+  // Advance another 0.55s: 3rd shot (90 deg) fires, and then queued reload() starts!
+  for (let i = 0; i < 11; i++) {
+    stepWorldSimulation(world, 0.05);
+  }
+  assert.equal(player.shotsFired, 3);
+  assert.ok(player.reloadTimer > 0);
+});
+
+test('Two bullets colliding in mid-air explode and destroy each other', () => {
+  const world = createInitialWorldState();
+  world.shellState = 'playing';
+
+  // Clear horizontal lane y = 5 so no obstacles interfere
+  for (let gx = 1; gx < 29; gx++) {
+    world.grid[5][gx] = TileType.EMPTY;
+  }
+
+  // Freeze tanks so only the two test bullets interact
+  for (const t of world.tanks) {
+    t.mainCode = 'void setup() {} void loop() {}';
+    t.actionQueue = [];
+  }
+
+  const tank1 = world.tanks[0];
+  const tank2 = world.tanks[1];
+  tank1.x = 5.5;
+  tank1.y = 5.5;
+  tank2.x = 10.5;
+  tank2.y = 5.5;
+
+  // Tank 1 shoots East (0 deg) toward Tank 2; Tank 2 shoots West (180 deg) toward Tank 1
+  assert.equal(executeInstantShoot(world, tank1.id, 10.5, 5.5), true);
+  assert.equal(executeInstantShoot(world, tank2.id, 5.5, 5.5), true);
+  assert.equal(world.bullets.length, 2);
+
+  // Step simulation up to 0.8 seconds; the two bullets (4.0 u/s each, 8.0 u/s closing speed) meet at x=8.0 around t=0.5s
+  for (let i = 0; i < 16; i++) {
+    stepWorldSimulation(world, 0.05);
+  }
+
+  // Both bullets must have collided and exploded mid-air before hitting either tank!
+  assert.equal(world.bullets.length, 0);
+  assert.equal(tank1.hp, 5);
+  assert.equal(tank2.hp, 5);
+  assert.ok(world.floatingTexts.some((ft) => ft.text.includes('ĐẠN NỔ')));
+});
+
 

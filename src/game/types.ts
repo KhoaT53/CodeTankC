@@ -13,6 +13,7 @@ export const PORTAL_COOLDOWN = 2.5;
 export const COMPILE_COOLDOWN = 1.0;
 export const SENSOR_RADIUS = 20.0;
 export const MAX_MAP_ITEMS = 3;
+export const INSTANT_SHOOT_COOLDOWN = 0.25;
 
 export enum TileType {
   OCEAN = -1,
@@ -156,6 +157,13 @@ export type KineticTask =
       waitTimer: number;
     }
   | {
+      type: 'SHOOT_AT_ANGLE';
+      angleDeg: number;
+    }
+  | {
+      type: 'RELOAD_AMMO';
+    }
+  | {
       type: 'WAIT';
       remainingTime: number;
     };
@@ -183,6 +191,7 @@ export interface Tank {
   // Timers & Cooldowns
   reloadTimer: number; // > 0 means currently reloading (2.5s)
   fireCooldown: number; // > 0 means waiting 0.5s between shots
+  instantShootCooldown?: number; // >= 0.25s minimum delay between consecutive triple-click shots
   dashCooldown: number; // 8.0s
   dashTimer: number; // 0.2s active dash
   dashDirDeg: number;
