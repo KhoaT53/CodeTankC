@@ -411,7 +411,8 @@ export default function App() {
   }, []);
 
   const handleCreatePeerRoom = useCallback((customCode?: string) => {
-    peerManagerRef.current?.createHostRoom(customCode);
+    const safeCode = typeof customCode === 'string' ? customCode : undefined;
+    peerManagerRef.current?.createHostRoom(safeCode);
   }, []);
 
   const handleJoinPeerRoom = useCallback(

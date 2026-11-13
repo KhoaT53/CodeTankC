@@ -562,7 +562,9 @@ export const TitleLobbyScreen: React.FC<TitleLobbyScreenProps> = ({
               {networkRole !== 'OFFLINE' && roomCode && (
                 <div className="flex items-center gap-1 bg-slate-950 border border-emerald-500/50 px-2 py-0.5 rounded text-xs font-mono">
                   <span className="text-slate-400">ID:</span>
-                  <strong className="text-emerald-400">{roomCode}</strong>
+                  <strong data-testid="room-code-badge" className="text-emerald-400">
+                    {roomCode}
+                  </strong>
                   <button
                     type="button"
                     onClick={handleCopyShortCode}
@@ -582,7 +584,8 @@ export const TitleLobbyScreen: React.FC<TitleLobbyScreenProps> = ({
             <div className="flex items-center gap-1.5">
               <button
                 type="button"
-                onClick={onCreatePeerRoom}
+                data-testid="create-room-btn"
+                onClick={() => onCreatePeerRoom()}
                 className="px-2.5 py-1.5 text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg flex items-center gap-1 cursor-pointer whitespace-nowrap"
               >
                 <Radio className="w-3.5 h-3.5" />
@@ -600,6 +603,7 @@ export const TitleLobbyScreen: React.FC<TitleLobbyScreenProps> = ({
 
               <button
                 type="button"
+                data-testid="join-room-btn"
                 onClick={() => onJoinPeerRoom(quickJoinCode)}
                 className="px-2.5 py-1.5 text-xs font-bold bg-sky-500 hover:bg-sky-400 text-slate-950 rounded-lg flex items-center gap-1 cursor-pointer whitespace-nowrap"
               >
@@ -619,7 +623,7 @@ export const TitleLobbyScreen: React.FC<TitleLobbyScreenProps> = ({
               )}
             </div>
 
-            <div className="text-[11px] text-slate-400 truncate">
+            <div data-testid="peer-status-text" className="text-[11px] text-slate-400 truncate">
               {peerError ? (
                 <span className="text-rose-400">{peerError}</span>
               ) : (
